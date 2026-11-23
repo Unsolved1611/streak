@@ -48,15 +48,28 @@ export interface VaultStore {
   clearHistory: () => void;
   updatePreferences: (patch: Partial<StreakPreferences>) => void;
   setPledge: (pledge: string) => void;
-  completeOnboarding: (opts: { pledge: string; title: string; discreet: boolean; start: boolean }) => void;
+  completeOnboarding: (opts: { pledge?: string; title?: string; discreet?: boolean; start: boolean }) => void;
   importData: (data: StreakData) => void;
   connectCloud: (credentials: SyncCredentials) => Promise<boolean>;
   disconnectCloud: () => void;
   syncNow: () => Promise<boolean>;
+  /** Creates (or adopts) the gist and returns true when a gist id is known. */
+  ensureCloudGist: () => Promise<boolean>;
+  /** True while the very first paired sync is still resolving. */
+  bootSyncing: boolean;
   wipeLocal: () => void;
 }
 
 type SyncReason = 'init' | 'mutation' | 'focus' | 'manual';
+
+interface PerformSyncOptions {
+  /** Only the explicit "Connect & sync" / "Create gist" actions may create one. */
+  createIfMissing?: boolean;
+}
+
+function hasRealContent(data: StreakData): boolean {
+  return Boolean(data.activeChallengeStart) || data.history.length > 0 || data.personalPledge.trim().length > 0;
+}
 
 function makeId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
@@ -78,6 +91,7 @@ export function useVault(): VaultStore {
   const [lastSync, setLastSync] = useState<string | null>(() => loadLastSync());
   const [onboarded, setOnboarded] = useState<boolean>(() => loadOnboarded());
   const [hydrated, setHydrated] = useState(false);
+  const [bootSync, setBootSync] = useState<'idle' | 'pending' | 'done'>('idle');
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
   const dataRef = useRef<StreakData>(data);
@@ -87,7 +101,7 @@ export function useVault(): VaultStore {
   const pendingRef = useRef(false);
   const pushTimerRef = useRef<number | null>(null);
   const lastAttemptRef = useRef(0);
-  const syncRef = useRef<(reason: SyncReason) => Promise<boolean>>(async () => false);
+  const syncRef = useRef<(reason: SyncReason, options?: PerformSyncOptions) => Promise<boolean>>(async () => false);
 
   const notify = useCallback((key: TKey, vars?: Record<string, string | number>) => {
     setToast({ id: Date.now() + Math.random(), key, vars });
@@ -97,13 +111,24 @@ export function useVault(): VaultStore {
 
   const engine = useCallback((): GistSyncEngine => {
     if (!engineRef.current) engineRef.current = new GistSyncEngine(credentialsRef.current);
-    engineRef.current.setCredentials(credentialsRef.current);
     return engineRef.current;
+  }, []);
+
+  /**
+   * Single write-path for credentials: ref + localStorage + React state + the
+   * live engine instance. Forgetting one of those is exactly how a freshly
+   * created gist id gets lost, leaving the app bound to nothing.
+   */
+  const applyCredentials = useCallback((next: SyncCredentials | null) => {
+    credentialsRef.current = next;
+    saveCredentials(next);
+    setCredentials(next);
+    if (engineRef.current) engineRef.current.setCredentials(next);
   }, []);
 
   /** Pull + resolve + push-if-needed. Prevents overlapping runs. */
   const performSync = useCallback(
-    async (reason: SyncReason): Promise<boolean> => {
+    async (reason: SyncReason, options: PerformSyncOptions = {}): Promise<boolean> => {
       const creds = credentialsRef.current;
       if (!creds?.token) {
         setSyncStatus('local');
@@ -121,21 +146,25 @@ export function useVault(): VaultStore {
       syncingRef.current = true;
       setSyncStatus('syncing');
       try {
-        const result = await engine().synchronize(dataRef.current);
+        const result = await engine().synchronize(dataRef.current, { createIfMissing: options.createIfMissing });
+
+        // Bind this device to the gist the engine just created/adopted.
+        const previousGistId = credentialsRef.current?.gistId ?? null;
+        if (result.gistId && result.gistId !== previousGistId && credentialsRef.current) {
+          applyCredentials({ token: credentialsRef.current.token, gistId: result.gistId });
+          if (result.created) notify('toast.gistCreated');
+          else if (previousGistId === null) notify('toast.gistLinked');
+        }
 
         if (result.action === 'pulled' && result.data) {
           dataRef.current = result.data;
           setData(result.data);
           saveData(result.data);
-        }
-
-        const gistId = engine().gistId;
-        if (gistId && gistId !== credentialsRef.current?.gistId) {
-          const next: SyncCredentials = { token: credentialsRef.current!.token, gistId };
-          credentialsRef.current = next;
-          saveCredentials(next);
-          setCredentials(next);
-          if (result.action === 'created-gist') notify('toast.gistCreated');
+          // A paired device must never be pushed into first-run onboarding.
+          if (hasRealContent(result.data)) {
+            saveOnboarded(true);
+            setOnboarded(true);
+          }
         }
 
         const stamp = isoNow();
@@ -156,7 +185,7 @@ export function useVault(): VaultStore {
         }
       }
     },
-    [engine, notify],
+    [applyCredentials, engine, notify],
   );
 
   useEffect(() => {
@@ -195,26 +224,32 @@ export function useVault(): VaultStore {
     const pair = typeof window !== 'undefined' ? readPairFromHash(window.location.hash) : null;
     if (pair) {
       stripPairHash();
-      credentialsRef.current = pair;
-      saveCredentials(pair);
-      setCredentials(pair);
+      applyCredentials(pair);
       notify('toast.paired');
     } else if (typeof window !== 'undefined') {
       stripPairHash();
     }
 
+    const active = credentialsRef.current;
+    if (active?.token) setBootSync('pending');
+
     const timer = window.setTimeout(() => {
       if (cancelled) return;
       setHydrated(true);
-      const active = credentialsRef.current;
-      if (active?.token) void syncRef.current('init');
-    }, pair ? 400 : 150);
+      if (!active?.token) {
+        setBootSync('done');
+        return;
+      }
+      void syncRef.current('init').finally(() => {
+        if (!cancelled) setBootSync('done');
+      });
+    }, pair ? 250 : 150);
 
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [notify]);
+  }, [applyCredentials, notify]);
 
   // --- pull on focus / visibility / reconnect --------------------------------
   useEffect(() => {
@@ -293,17 +328,22 @@ export function useVault(): VaultStore {
   );
 
   const completeOnboarding = useCallback(
-    (opts: { pledge: string; title: string; discreet: boolean; start: boolean }) => {
-      commit((prev) => ({
-        ...prev,
-        personalPledge: opts.pledge.slice(0, 2000),
-        activeChallengeStart: opts.start ? prev.activeChallengeStart ?? isoNow() : prev.activeChallengeStart,
-        preferences: {
-          ...prev.preferences,
-          customTitle: opts.title.trim().slice(0, 48) || prev.preferences.customTitle,
-          discreetMode: opts.discreet,
-        },
-      }));
+    (opts: { pledge?: string; title?: string; discreet?: boolean; start: boolean }) => {
+      const pledge = opts.pledge?.trim() ?? '';
+      const title = opts.title?.trim() ?? '';
+      commit((prev) => {
+        const preferences = { ...prev.preferences };
+        // Only touch fields the user actually edited: a device that just pulled
+        // the vault from the cloud must not be overwritten by onboarding defaults.
+        if (title.length > 0) preferences.customTitle = title.slice(0, 48);
+        if (opts.discreet) preferences.discreetMode = true;
+        return {
+          ...prev,
+          ...(pledge.length > 0 ? { personalPledge: pledge.slice(0, 2000) } : {}),
+          activeChallengeStart: opts.start ? prev.activeChallengeStart ?? isoNow() : prev.activeChallengeStart,
+          preferences,
+        };
+      });
       saveOnboarded(true);
       setOnboarded(true);
     },
@@ -332,29 +372,30 @@ export function useVault(): VaultStore {
       };
       if (!clean.token) return false;
 
-      credentialsRef.current = clean;
-      saveCredentials(clean);
-      setCredentials(clean);
-      engineRef.current = null;
+      applyCredentials(clean);
       setSyncStatus('syncing');
-      const ok = await performSync('manual');
+      const ok = await performSync('manual', { createIfMissing: true });
       if (ok) notify('toast.connected');
       return ok;
     },
-    [notify, performSync],
+    [applyCredentials, notify, performSync],
   );
 
   const disconnectCloud = useCallback(() => {
-    credentialsRef.current = null;
     engineRef.current = null;
-    saveCredentials(null);
-    setCredentials(null);
+    applyCredentials(null);
     setSyncStatus('local');
     setSyncError(null);
     notify('toast.disconnected');
-  }, [notify]);
+  }, [applyCredentials, notify]);
 
   const syncNow = useCallback(async () => performSync('manual'), [performSync]);
+
+  const ensureCloudGist = useCallback(async (): Promise<boolean> => {
+    if (!credentialsRef.current?.token) return false;
+    await performSync('manual', { createIfMissing: true });
+    return Boolean(credentialsRef.current?.gistId);
+  }, [performSync]);
 
   const wipeLocal = useCallback(() => {
     clearAllLocal();
@@ -362,19 +403,21 @@ export function useVault(): VaultStore {
     dataRef.current = fresh;
     setData(fresh);
     setOnboarded(false);
-    credentialsRef.current = null;
     engineRef.current = null;
-    setCredentials(null);
+    applyCredentials(null);
     setSyncStatus('local');
     setSyncError(null);
     setLastSync(null);
     notify('toast.wiped');
-  }, [notify]);
+  }, [applyCredentials, notify]);
 
   const needsOnboarding = useMemo(
-    () => !onboarded && !data.activeChallengeStart && data.history.length === 0,
-    [onboarded, data.activeChallengeStart, data.history.length],
+    () => !onboarded && !credentials && !data.activeChallengeStart && data.history.length === 0,
+    [onboarded, credentials, data.activeChallengeStart, data.history.length],
   );
+
+  // Show a "pulling your vault" state instead of an empty Raw Ember flash.
+  const bootSyncing = bootSync === 'pending' && Boolean(credentials) && !data.activeChallengeStart;
 
   return {
     data,
@@ -385,6 +428,7 @@ export function useVault(): VaultStore {
     onboarded,
     needsOnboarding,
     hydrated,
+    bootSyncing,
     toast,
     notify,
     dismissToast,
@@ -399,6 +443,7 @@ export function useVault(): VaultStore {
     connectCloud,
     disconnectCloud,
     syncNow,
+    ensureCloudGist,
     wipeLocal,
   };
 }

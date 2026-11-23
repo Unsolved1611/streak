@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { useT } from '../../i18n/context';
 import { downloadBackup, parseImportedJson } from '../../lib/storage';
-import type { TKey } from '../../i18n/translations';
+import { syncErrorKey } from '../../lib/syncError';
 import type { VaultStore } from '../../state/useVault';
 import type { Language } from '../../types/streak';
 import SyncBadge from '../SyncBadge';
@@ -27,23 +27,6 @@ interface SettingsTabProps {
   store: VaultStore;
   onOpenPair: () => void;
 }
-
-const errorKey = (code: string | null): TKey => {
-  switch (code) {
-    case 'unauthorized':
-      return 'error.unauthorized';
-    case 'not-found':
-      return 'error.notFound';
-    case 'forbidden':
-      return 'error.forbidden';
-    case 'network':
-      return 'error.network';
-    case 'invalid-payload':
-      return 'error.invalidPayload';
-    default:
-      return 'error.sync';
-  }
-};
 
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
@@ -294,7 +277,7 @@ export default function SettingsTab({ store, onOpenPair }: SettingsTabProps) {
 
         {syncError && (
           <p className="flex items-start gap-1.5 rounded-lg border border-rose-400/30 bg-rose-500/10 px-2.5 py-2 text-[0.72rem] text-rose-200">
-            <AlertTriangle size={13} className="mt-0.5 shrink-0" /> {t(errorKey(store.syncError))}
+            <AlertTriangle size={13} className="mt-0.5 shrink-0" /> {t(syncErrorKey(store.syncError))}
           </p>
         )}
 

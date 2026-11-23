@@ -144,6 +144,12 @@ const en = {
   'settings.privacy': 'Privacy',
   'settings.privacyBody': 'No analytics, no servers, no accounts. Your streak lives in localStorage and, if you choose, in your own private gist.',
 
+  'boot.syncing': 'Pulling your vault…',
+  'boot.syncingHint': 'Restoring your streak from your private gist.',
+  'dash.cloudPending': 'Paired device — no data yet',
+  'dash.cloudPendingBody': 'This device is linked but has not received your vault. Check the network and try again.',
+  'dash.cloudPendingCta': 'Retry sync',
+
   'onboard.title': 'Welcome to your vault',
   'onboard.sub': 'A private place to build a streak — and watch it become something worth protecting.',
   'onboard.nameLabel': 'Name it something neutral',
@@ -208,6 +214,10 @@ const en = {
   'pair.sub': 'Scan this code with your phone camera to copy the token and gist to that device.',
   'pair.warning': 'Never screenshot or share this QR code. It contains your GitHub token — anyone who scans it can read and rewrite your data. Regenerate or revoke the token if it leaks.',
   'pair.needsCreds': 'Add a GitHub token first, then pair.',
+  'pair.needsGist': 'This device is not bound to a gist yet, so the QR would have nothing to share. Create the private gist first — it takes one tap.',
+  'pair.createGist': 'Create private gist',
+  'pair.creating': 'Creating private gist…',
+  'pair.gistReady': 'Gist ready. The QR is valid on any other device.',
   'pair.done': 'Done',
 
   'error.generic': 'Something went wrong.',
@@ -217,10 +227,12 @@ const en = {
   'error.forbidden': 'GitHub refused the request. Check token scopes or rate limits.',
   'error.network': 'Network unavailable. Working from local data.',
   'error.invalidPayload': 'GitHub rejected the payload.',
+  'error.noGist': 'This device is not bound to a gist yet. Open Settings → Cloud sync and tap Connect & sync.',
 
   'toast.paired': 'Paired. Pulling your data…',
   'toast.badPair': 'That pairing link is invalid.',
   'toast.gistCreated': 'Private gist created.',
+  'toast.gistLinked': 'Linked to your existing private gist.',
   'toast.connected': 'Connected to GitHub.',
   'toast.disconnected': 'Cloud sync disconnected.',
   'toast.synced': 'Synced.',
@@ -372,6 +384,12 @@ const es: Record<TranslationKey, string> = {
   'settings.privacy': 'Privacidad',
   'settings.privacyBody': 'Sin analíticas, sin servidores, sin cuentas. Tu racha vive en localStorage y, si quieres, en tu propio gist privado.',
 
+  'boot.syncing': 'Trayendo tu bóveda…',
+  'boot.syncingHint': 'Restaurando tu racha desde tu gist privado.',
+  'dash.cloudPending': 'Dispositivo vinculado — sin datos aún',
+  'dash.cloudPendingBody': 'Este dispositivo está vinculado pero no ha recibido tu bóveda. Revisa la red e inténtalo de nuevo.',
+  'dash.cloudPendingCta': 'Reintentar sync',
+
   'onboard.title': 'Bienvenido a tu bóveda',
   'onboard.sub': 'Un lugar privado para construir una racha — y verla convertirse en algo que vale la pena proteger.',
   'onboard.nameLabel': 'Ponle un nombre neutro',
@@ -436,6 +454,10 @@ const es: Record<TranslationKey, string> = {
   'pair.sub': 'Escanea este código con la cámara del móvil para copiar el token y el gist a ese dispositivo.',
   'pair.warning': 'Nunca captures ni compartas este código QR. Contiene tu token de GitHub: quien lo escanee puede leer y reescribir tus datos. Regenera o revoca el token si se filtra.',
   'pair.needsCreds': 'Primero agrega un token de GitHub, luego vincula.',
+  'pair.needsGist': 'Este dispositivo aún no está ligado a un gist, así que el QR no tendría nada que compartir. Crea primero el gist privado: es un toque.',
+  'pair.createGist': 'Crear gist privado',
+  'pair.creating': 'Creando gist privado…',
+  'pair.gistReady': 'Gist listo. El QR ya es válido en cualquier otro dispositivo.',
   'pair.done': 'Listo',
 
   'error.generic': 'Algo salió mal.',
@@ -445,10 +467,12 @@ const es: Record<TranslationKey, string> = {
   'error.forbidden': 'GitHub rechazó la petición. Revisa los permisos o el límite de peticiones.',
   'error.network': 'Sin red. Trabajando con datos locales.',
   'error.invalidPayload': 'GitHub rechazó el contenido.',
+  'error.noGist': 'Este dispositivo aún no está ligado a un gist. Abre Ajustes → Sincronización y pulsa Conectar y sincronizar.',
 
   'toast.paired': 'Vinculado. Trayendo tus datos…',
   'toast.badPair': 'Ese enlace de vinculación no es válido.',
   'toast.gistCreated': 'Gist privado creado.',
+  'toast.gistLinked': 'Vinculado a tu gist privado existente.',
   'toast.connected': 'Conectado a GitHub.',
   'toast.disconnected': 'Sync en la nube desconectada.',
   'toast.synced': 'Sincronizado.',

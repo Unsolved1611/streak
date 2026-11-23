@@ -10,7 +10,7 @@
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict-3178c6?style=flat-square" />
   <img alt="Vite" src="https://img.shields.io/badge/Vite-8-646cff?style=flat-square" />
   <img alt="Tailwind" src="https://img.shields.io/badge/Tailwind-3-38bdf8?style=flat-square" />
-  <img alt="Tests" src="https://img.shields.io/badge/tests-72%20passing-3fb950?style=flat-square" />
+  <img alt="Tests" src="https://img.shields.io/badge/tests-78%20passing-3fb950?style=flat-square" />
   <img alt="License" src="https://img.shields.io/badge/license-MIT-black?style=flat-square" />
 </p>
 
@@ -65,7 +65,7 @@ Vite + React 19 + TypeScript (strict) + Tailwind CSS, `lucide-react` icons, `qrc
 ```bash
 npm install
 npm run dev        # http://localhost:5173
-npm test           # 72 unit tests (tiers, formatting, sync conflicts, pairing, storage)
+npm test           # 78 unit tests (tiers, formatting, sync conflicts, pairing, storage)
 npm run lint       # eslint (0 errors, 0 warnings)
 npm run build      # tsc -b && vite build → dist/
 npm run preview    # serve the production build locally
@@ -112,19 +112,36 @@ Sync is **optional** and entirely serverless. Data lives in `localStorage` (inst
 ### Connect
 
 1. Open the app → **Settings → Cloud sync**.
-2. Paste the token. Leave **Gist ID** empty — a new **private** Gist (`public: false`) containing `streak-data.json` is created automatically and its ID is saved for you.
-3. Tap **Connect & sync**. The badge in the header turns to **Synced**.
+2. Paste the token. Leave **Gist ID** empty.
+3. Tap **Connect & sync**. The app then:
+   1. looks through your gists for one that already contains `streak-data.json` (**adopts the most recent one**, so a second device joins the same vault instead of creating a duplicate),
+   2. only if none exists, creates a **private** Gist (`public: false`) with `streak-data.json`,
+   3. writes the id into the **Gist ID** field and reuses it forever after.
+
+   The badge in the header turns to **Synced**. If you prefer, paste an existing Gist ID explicitly and the app will use exactly that one.
 
 > The token is stored only in this browser's `localStorage`. It is never hardcoded, never bundled, and never sent anywhere except `api.github.com`.
 
+> Background syncs never create gists. Only the explicit **Connect & sync** / **Create private gist** actions can, so a half-configured device cannot split your account into two vaults.
+
 ### Step by step: pair PC + mobile with one QR scan
 
-1. Connect the cloud on your **PC** (token + automatic gist).
-2. In the app tap **Pair device** (dashboard, top-right QR chip) or **Settings → Pair mobile via QR**.
-3. On your **phone**, open the same GitHub Pages URL and scan the QR code with the camera app.
-4. The link contains `#pair=<base64 {token, gistId}>`. On startup the app decodes the credentials into `localStorage`, then **immediately strips the hash** with `history.replaceState` (so it never lingers in the URL bar, history or a screenshot), and pulls the remote data straight away.
+1. Connect the cloud on your **PC** (token + automatic gist) and wait for the **Synced** badge.
+2. Confirm the **Gist ID** field is filled in Settings. If it is empty, the QR would have nothing to share — the pairing modal detects this and offers a **Create private gist** button instead of a misleading code.
+3. In the app tap **Pair device** (dashboard, top-right QR chip) or **Settings → Pair mobile via QR**. The modal shows the gist the phone will join (`Gist <id>`).
+4. On your **phone**, open the same GitHub Pages URL and scan the QR code with the camera app.
+5. The link contains `#pair=<base64 {token, gistId}>`. On startup the app decodes the credentials into `localStorage`, **immediately strips the hash** with `history.replaceState` (so it never lingers in the URL bar, history or a screenshot), shows *“Pulling your vault…”*, and replaces the local state with the cloud copy — **without** sending the phone through first-run onboarding.
 
 > ⚠️ **Never screenshot or share that QR code.** It contains your GitHub token: anyone who scans it can read and rewrite your data. If it leaks, revoke the token on GitHub, generate a new one, and re-pair. The app shows this warning in the pairing modal as well.
+
+### Recovering a pairing made with an older build
+
+If you connected while the **Gist ID** field stayed empty and the phone asked you to set everything up again, your devices are pointing at different gists. Recover in four steps — no data is lost:
+
+1. **Update the deployment** (push to `main` and let the Pages workflow finish), then reload both devices.
+2. **PC:** Settings → Cloud sync → clear the **Gist ID** field → **Connect & sync**. The app now fills the field automatically: it adopts the newest existing `streak-data.json` gist, or creates one if there is genuinely none.
+3. **Phone:** if the QR now shows `Gist <id>`, just **scan it again** — pairing overwrites the old credentials. If the phone holds a throwaway 0h streak, tap **Disconnect** in Settings first so its blank state cannot win the merge.
+4. **Clean up (optional):** at <https://gist.github.com> delete the extra `streak-data.json` gists that the old build created, keeping the one with the newest data. If you keep a specific one, paste its id into **Gist ID** on the PC.
 
 ### Manual backups
 
@@ -134,7 +151,8 @@ Sync is **optional** and entirely serverless. Data lives in `localStorage` (inst
 
 - Every mutation stamps `updatedAt` with a **monotonic** ISO timestamp (never older than the previous value), so a device with a slow clock cannot silently overwrite a newer write.
 - On load / focus / after each change the engine GETs the gist and compares `updatedAt` with the local copy: newest wins. Identical timestamps + different payload resolve deterministically toward the remote so both devices converge.
-- A **blank fresh install** (no streak, no history, no urges, no pledge) never clobbers a real remote streak — and an empty gist never wipes real local progress.
+- A **blank fresh install** (no streak, no history, no urges, no pledge — or a streak started less than five minutes ago while pairing) never clobbers a real remote streak, and an empty gist never wipes real local progress.
+- Connecting with only a token **adopts the newest existing `streak-data.json` gist**; gists are only ever created by an explicit user action, and the resulting id is persisted immediately so the next sync (and the pairing QR) reuse it.
 - `GET` always uses `cache: 'no-store'`; updates always use the literal **uppercase** `'PATCH'` (lowercase method strings can break the CORS preflight in some browsers). Both are covered by unit tests.
 - Failed syncs never lose data: the app keeps working from `localStorage` and shows **Sync Error** with a readable reason.
 
@@ -199,6 +217,9 @@ Coverage highlights: tier threshold boundaries (including exact `24h`/`90d` edge
 | --- | --- |
 | Page 404s after a refresh | You are on branch deployment or a custom 404 page is intercepting. Follow step 2 and use **Source: GitHub Actions**. |
 | Badge stuck on **Sync Error** | Open **Settings** — the exact reason is shown. `401` → token invalid/expired; `403` → missing *Gists: Read and write* or rate limit; `404` → gist deleted (the app creates a new one automatically). |
+| **Gist ID stays empty after connecting** | The token is missing **Account permissions → Gists: Read and write**, so GitHub answers `403/404`. Fix the token, press **Connect & sync** again — the field fills as soon as a gist is created or adopted. |
+| **Phone asks me to set everything up again after scanning** | The QR had no gist id (PC not connected yet). Open **Pair device** on the PC, confirm it shows `Gist <id>` (use **Create private gist** if needed) and scan again. A paired device now shows “Pulling your vault…” instead of onboarding. |
+| Two gists appeared in my account | You connected with an older build that created one per device. Delete the duplicates on gist.github.com, keep the one with the newest data, then in Settings paste that **Gist ID** explicitly (blank also works: the newest streak gist is adopted). |
 | Pairing link does nothing | The QR must be opened on the **same deployment URL**; if you edited the URL, the `#pair=` payload must be the last fragment. Re-generate the QR. |
 | Data on a second device is older | The newest `updatedAt` wins by design; open the device with the newest data and tap the header badge to push, then focus the other device. |
 | Turn off sync | **Settings → Disconnect**. Local data stays untouched. |
@@ -250,7 +271,7 @@ Todo funciona en el navegador. Sin backend, sin cuentas, sin analíticas. La sin
 ```bash
 npm install
 npm run dev        # http://localhost:5173
-npm test           # 72 tests unitarios
+npm test           # 78 tests unitarios
 npm run lint       # eslint (0 errores, 0 avisos)
 npm run build      # tsc -b && vite build → dist/
 ```
@@ -294,19 +315,36 @@ Es **opcional** y totalmente sin servidor. Los datos viven en `localStorage` (in
 ### Conectar
 
 1. Abre la app → **Ajustes → Sincronización en la nube**.
-2. Pega el token. Deja el **ID del Gist** vacío: se crea automáticamente un Gist **privado** (`public: false`) con `streak-data.json` y su ID queda guardado.
-3. Pulsa **Conectar y sincronizar**. El indicador de la cabecera pasa a **Sincronizado**.
+2. Pega el token. Deja el **ID del Gist** vacío.
+3. Pulsa **Conectar y sincronizar**. La app entonces:
+   1. busca entre tus gists uno que ya contenga `streak-data.json` (**adopta el más reciente**, así un segundo dispositivo se une a la misma bóveda en vez de duplicarla),
+   2. solo si no existe ninguno, crea un Gist **privado** (`public: false`) con `streak-data.json`,
+   3. escribe el ID en el campo **ID del Gist** y lo reutiliza para siempre.
+
+   El indicador de la cabecera pasa a **Sincronizado**. Si lo prefieres, pega un ID de Gist existente y la app usará exactamente ese.
 
 > El token se guarda solo en el `localStorage` de este navegador. Nunca va en el código, nunca se empaqueta y solo se envía a `api.github.com`.
 
+> Las sincronizaciones en segundo plano nunca crean gists. Solo lo hacen las acciones explícitas **Conectar y sincronizar** / **Crear gist privado**, así un dispositivo a medio configurar no puede partir tu cuenta en dos bóvedas.
+
 ### Paso a paso: vincular PC + móvil con un solo escaneo QR
 
-1. Conecta la nube en tu **PC** (token + gist automático).
-2. En la app pulsa **Vincular dispositivo** (chip QR arriba a la derecha del panel) o **Ajustes → Vincular móvil por QR**.
-3. En el **móvil**, abre la misma URL de GitHub Pages y escanea el QR con la cámara.
-4. El enlace contiene `#pair=<base64 {token, gistId}>`. Al arrancar, la app decodifica las credenciales a `localStorage`, **borra el hash inmediatamente** con `history.replaceState` (para que no quede en la barra de direcciones, el historial ni una captura) y hace un pull inmediato de los datos.
+1. Conecta la nube en tu **PC** (token + gist automático) y espera el indicador **Sincronizado**.
+2. Comprueba que el campo **ID del Gist** se ha rellenado en Ajustes. Si está vacío, el QR no tendría nada que compartir: el modal de vinculación lo detecta y ofrece un botón **Crear gist privado** en lugar de un código engañoso.
+3. En la app pulsa **Vincular dispositivo** (chip QR arriba a la derecha del panel) o **Ajustes → Vincular móvil por QR**. El modal muestra el gist al que se unirá el móvil (`Gist <id>`).
+4. En el **móvil**, abre la misma URL de GitHub Pages y escanea el QR con la cámara.
+5. El enlace contiene `#pair=<base64 {token, gistId}>`. Al arrancar, la app decodifica las credenciales a `localStorage`, **borra el hash inmediatamente** con `history.replaceState` (para que no quede en la barra de direcciones, el historial ni una captura), muestra *“Trayendo tu bóveda…”* y reemplaza el estado local con la copia de la nube **sin** mandar el móvil al onboarding inicial.
 
 > ⚠️ **Nunca captures ni compartas ese código QR.** Contiene tu token de GitHub: quien lo escanee puede leer y reescribir tus datos. Si se filtra, revoca el token en GitHub, genera otro y vuelve a vincular. La app muestra este aviso también en el modal.
+
+### Recuperar una vinculación hecha con una versión anterior
+
+Si conectaste con el campo **ID del Gist** vacío y el móvil te pidió configurarlo todo de nuevo, tus dispositivos están apuntando a gists distintos. Se arregla en cuatro pasos, sin perder datos:
+
+1. **Actualiza el despliegue** (push a `main` y espera al workflow de Pages) y recarga ambos dispositivos.
+2. **PC:** Ajustes → Sincronización → vacía el campo **ID del Gist** → **Conectar y sincronizar**. Ahora el campo se rellena solo: adopta el gist más reciente que contenga `streak-data.json` o crea uno si de verdad no existe ninguno.
+3. **Móvil:** si el QR ya muestra `Gist <id>`, **escanea de nuevo** — la vinculación sobrescribe las credenciales antiguas. Si el móvil tiene una racha de 0h prescindible, pulsa **Desconectar** en Ajustes antes, para que su estado vacío no gane la fusión.
+4. **Limpieza (opcional):** en <https://gist.github.com> borra los gists `streak-data.json` extra que creó la versión antigua y conserva el de datos más recientes. Si quieres usar uno concreto, pega su id en **ID del Gist** en la PC.
 
 ### Respaldos manuales
 
@@ -316,7 +354,8 @@ Es **opcional** y totalmente sin servidor. Los datos viven en `localStorage` (in
 
 - Cada cambio sella `updatedAt` con una marca ISO **monotónica** (nunca anterior a la previa), así un dispositivo con reloj atrasado no puede pisar una escritura más nueva.
 - Al abrir, al enfocar y tras cada cambio, el motor hace GET del gist y compara `updatedAt` con la copia local: gana la más reciente. Si las marcas coinciden y el contenido difiere, se resuelve de forma determinista hacia el remoto para que ambos dispositivos converjan.
-- Una **instalación nueva y vacía** (sin racha, historial, impulsos ni juramento) nunca sobrescribe una racha remota real, y un gist vacío nunca borra el progreso local.
+- Una **instalación nueva y vacía** (sin racha, historial, impulsos ni juramento — o con una racha iniciada hace menos de cinco minutos al vincular) nunca sobrescribe una racha remota real, y un gist vacío nunca borra el progreso local.
+- Conectar solo con un token **adopta el gist más reciente que ya contenga `streak-data.json`**; los gists solo se crean con una acción explícita del usuario y el ID resultante se guarda al instante para que la siguiente sincronización (y el QR) usen el mismo.
 - `GET` siempre con `cache: 'no-store'`; las actualizaciones siempre con `'PATCH'` en **mayúsculas** (un método en minúsculas puede romper el preflight CORS en algunos navegadores). Ambos casos están cubiertos por tests.
 - Una sync fallida nunca pierde datos: la app sigue funcionando desde `localStorage` y muestra **Error de sync** con el motivo.
 
@@ -336,6 +375,9 @@ Igual que el JSON del apartado inglés. Las credenciales se guardan **aparte** (
 | --- | --- |
 | 404 al recargar | Estás desplegando desde una rama o hay una página 404 personalizada. Sigue el paso 2 y usa **Source: GitHub Actions**. |
 | El indicador queda en **Error de sync** | Abre **Ajustes** y verás el motivo exacto. `401` → token inválido/caducado; `403` → falta *Gists: Read and write* o límite de peticiones; `404` → gist eliminado (la app crea uno nuevo automáticamente). |
+| **El ID del Gist queda vacío tras conectar** | Al token le falta **Account permissions → Gists: Read and write**, así que GitHub responde `403/404`. Corrige el token y pulsa **Conectar y sincronizar** otra vez: el campo se rellena en cuanto se crea o adopta un gist. |
+| **El móvil me pide configurarlo todo de nuevo tras escanear** | El QR no llevaba ID de gist (la PC aún no estaba conectada). Abre **Vincular dispositivo** en la PC, comprueba que muestra `Gist <id>` (usa **Crear gist privado** si hace falta) y vuelve a escanear. Un dispositivo vinculado ahora muestra “Trayendo tu bóveda…” en lugar del onboarding. |
+| Aparecieron dos gists en mi cuenta | Conectaste con una versión antigua que creaba uno por dispositivo. Borra los duplicados en gist.github.com, conserva el de datos más recientes y pega ese **ID del Gist** explícitamente en Ajustes (también vale dejarlo vacío: se adopta el gist de racha más reciente). |
 | El enlace de vinculación no hace nada | El QR debe abrirse en la **misma URL** del despliegue; el fragmento `#pair=` debe ser el último. Regenera el QR. |
 | Los datos del segundo dispositivo están viejos | Gana el `updatedAt` más reciente por diseño; abre el dispositivo más actualizado, toca el indicador de la cabecera y enfoca el otro. |
 | Quiero desactivar la sync | **Ajustes → Desconectar**. Los datos locales no se tocan. |

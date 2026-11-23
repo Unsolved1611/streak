@@ -7,7 +7,7 @@ import type { SyncCredentials } from '../types/streak';
 interface OnboardingModalProps {
   open: boolean;
   defaultTitle: string;
-  onComplete: (opts: { pledge: string; title: string; discreet: boolean; start: boolean }) => void;
+  onComplete: (opts: { pledge?: string; title?: string; discreet?: boolean; start: boolean }) => void;
   onConnectCloud: (credentials: SyncCredentials) => Promise<boolean>;
   onLanguage: (lang: 'es' | 'en') => void;
 }
@@ -18,16 +18,24 @@ export default function OnboardingModal({ open, defaultTitle, onComplete, onConn
   const [title, setTitle] = useState(defaultTitle);
   const [discreet, setDiscreet] = useState(false);
   const [pledge, setPledge] = useState('');
+  const [titleTouched, setTitleTouched] = useState(false);
+  const [pledgeTouched, setPledgeTouched] = useState(false);
   const [token, setToken] = useState('');
   const [gistId, setGistId] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const finish = async () => {
+  const finish = async (start: boolean) => {
     setBusy(true);
     if (token.trim()) {
+      // Pulling the vault first means onboarding never overwrites cloud data.
       await onConnectCloud({ token, gistId: gistId.trim() || null });
     }
-    onComplete({ pledge, title, discreet, start: true });
+    onComplete({
+      pledge: pledgeTouched ? pledge : undefined,
+      title: titleTouched ? title : undefined,
+      discreet,
+      start,
+    });
     setBusy(false);
   };
 
@@ -83,7 +91,10 @@ export default function OnboardingModal({ open, defaultTitle, onComplete, onConn
                 className="field"
                 value={title}
                 maxLength={48}
-                onChange={(e) => setTitle(e.target.value)}
+                onChange={(e) => {
+                  setTitle(e.target.value);
+                  setTitleTouched(true);
+                }}
                 placeholder="Vault"
               />
             </div>
@@ -129,7 +140,10 @@ export default function OnboardingModal({ open, defaultTitle, onComplete, onConn
               className="field min-h-[120px] resize-y leading-relaxed"
               value={pledge}
               maxLength={2000}
-              onChange={(e) => setPledge(e.target.value)}
+              onChange={(e) => {
+                setPledge(e.target.value);
+                setPledgeTouched(true);
+              }}
               placeholder={t('onboard.pledgePlaceholder')}
               autoFocus
             />
@@ -190,13 +204,13 @@ export default function OnboardingModal({ open, defaultTitle, onComplete, onConn
               <button type="button" onClick={() => setStep(2)} className="btn btn-ghost px-3 py-3 text-xs">
                 <ArrowLeft size={14} />
               </button>
-              <button type="button" onClick={() => void finish()} disabled={busy} className="btn btn-primary flex-1 py-3 text-sm">
+              <button type="button" onClick={() => void finish(true)} disabled={busy} className="btn btn-primary flex-1 py-3 text-sm">
                 {busy ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />} {t('onboard.start')}
               </button>
             </div>
             <button
               type="button"
-              onClick={() => void finish()}
+              onClick={() => void finish(false)}
               disabled={busy}
               className="text-center text-[0.68rem] uppercase tracking-[0.14em] text-[color:var(--tier-muted)] underline decoration-dotted underline-offset-4"
             >

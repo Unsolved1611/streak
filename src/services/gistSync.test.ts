@@ -6,6 +6,7 @@ import {
   GistSyncEngine,
   createGist,
   getGist,
+  findStreakGist,
   isEmptyStreakData,
   readGistData,
   resolveConflict,
@@ -100,6 +101,15 @@ describe('resolveConflict (last-write-wins by updatedAt)', () => {
     expect(isEmptyStreakData(null)).toBe(true);
   });
 
+  it('treats a run started seconds before pairing as blank, but a real run as data', () => {
+    const justStarted = { ...makeData('2026-07-01T00:00:00.000Z'), activeChallengeStart: '2026-06-30T23:59:50.000Z' };
+    expect(isEmptyStreakData(justStarted)).toBe(true);
+    expect(resolveConflict(justStarted, REMOTE).source).toBe('remote');
+
+    const realRun = { ...makeData('2026-07-01T00:00:00.000Z'), activeChallengeStart: '2026-06-20T00:00:00.000Z' };
+    expect(isEmptyStreakData(realRun)).toBe(false);
+  });
+
   it('compares timestamps chronologically, not lexicographically by accident', () => {
     const older = makeData('2026-02-01T09:00:00.000Z');
     const newer = makeData('2026-02-01T10:00:00.000Z');
@@ -189,6 +199,26 @@ describe('readGistData', () => {
   });
 });
 
+describe('findStreakGist', () => {
+  it('returns the most recently updated gist that carries the streak file', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse([
+        { id: 'a', updated_at: '2026-01-01T00:00:00.000Z', files: { 'streak-data.json': {} } },
+        { id: 'b', updated_at: '2026-03-01T00:00:00.000Z', files: { 'streak-data.json': {} } },
+        { id: 'c', updated_at: '2026-06-01T00:00:00.000Z', files: { 'other.txt': {} } },
+      ]),
+    );
+    await expect(findStreakGist('t', fetchMock as unknown as typeof fetch)).resolves.toBe('b');
+  });
+
+  it('returns null when there is nothing to adopt', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse([]));
+    await expect(findStreakGist('t', fetchMock as unknown as typeof fetch)).resolves.toBeNull();
+    const broken = vi.fn(async () => jsonResponse({ message: 'nope' }));
+    await expect(findStreakGist('t', broken as unknown as typeof fetch)).resolves.toBeNull();
+  });
+});
+
 describe('GistSyncEngine', () => {
   it('pulls remote when remote is newer', async () => {
     const fetchMock = vi.fn(async () => gistWith(REMOTE));
@@ -221,15 +251,64 @@ describe('GistSyncEngine', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('creates a private gist when none is configured, then reports its id', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ id: 'brand-new', public: false }));
+  it('creates a private gist on explicit connect, then reports its id', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).includes('/gists?') ? jsonResponse([]) : jsonResponse({ id: 'brand-new', public: false }),
+    );
     const engine = new GistSyncEngine({ token: 't', gistId: null }, fetchMock as unknown as typeof fetch);
 
-    const outcome = await engine.synchronize(LOCAL);
-    expect(outcome.action).toBe('created-gist');
+    const outcome = await engine.synchronize(LOCAL, { createIfMissing: true });
+    // The gist is created and then immediately seeded, so the data action is
+    // "pushed" while `created` records the provenance for the UI toast.
+    expect(outcome.created).toBe(true);
+    expect(outcome.gistId).toBe('brand-new');
     expect(engine.gistId).toBe('brand-new');
-    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(init.body)).public).toBe(false);
+    const calls = fetchMock.mock.calls as unknown as [string, RequestInit?][];
+    const post = calls.find(([, init]) => init?.method === 'POST');
+    expect(JSON.parse(String(post?.[1]?.body)).public).toBe(false);
+  });
+
+  it('returns the gist id from every sync outcome so it can be persisted', async () => {
+    const fetchMock = vi.fn(async () => gistWith(REMOTE));
+    const engine = new GistSyncEngine({ token: 't', gistId: 'gist-1' }, fetchMock as unknown as typeof fetch);
+    const outcome = await engine.synchronize(LOCAL);
+    expect(outcome.gistId).toBe('gist-1');
+    expect(outcome.action).toBe('pulled');
+    expect(outcome.created).toBe(false);
+  });
+
+  it('never creates a gist from a background sync when no id is configured', async () => {
+    const fetchMock = vi.fn();
+    const engine = new GistSyncEngine({ token: 't', gistId: null }, fetchMock as unknown as typeof fetch);
+
+    await expect(engine.synchronize(LOCAL)).rejects.toMatchObject({ status: 409 });
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(engine.push(LOCAL)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('adopts the existing streak gist on a second device instead of creating a duplicate', async () => {
+    const list = [
+      { id: 'gist-old', updated_at: '2026-01-01T00:00:00.000Z', files: { 'streak-data.json': {} } },
+      { id: 'gist-new', updated_at: '2026-05-01T00:00:00.000Z', files: { 'streak-data.json': {} } },
+      { id: 'gist-other', updated_at: '2026-06-01T00:00:00.000Z', files: { 'notes.md': {} } },
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/gists?')) return jsonResponse(list);
+      if (init?.method === 'PATCH') return gistWith(REMOTE, 'gist-new');
+      return gistWith(REMOTE, 'gist-new');
+    });
+    const engine = new GistSyncEngine({ token: 't', gistId: null }, fetchMock as unknown as typeof fetch);
+
+    const blankLocal = makeData('2026-07-01T00:00:00.000Z');
+    const outcome = await engine.synchronize(blankLocal, { createIfMissing: true });
+
+    expect(engine.gistId).toBe('gist-new');
+    expect(outcome.action).toBe('pulled');
+    expect(outcome.data?.personalPledge).toBe('remote pledge');
+    const calls = fetchMock.mock.calls as unknown as [string, RequestInit?][];
+    const posts = calls.filter(([, init]) => init?.method === 'POST');
+    expect(posts).toHaveLength(0);
   });
 
   it('recovers from a deleted gist by creating a fresh one', async () => {

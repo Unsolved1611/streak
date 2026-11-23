@@ -128,6 +128,20 @@ export default function App() {
             </div>
           )}
 
+          {store.credentials && !store.bootSyncing && !store.data.activeChallengeStart && store.data.history.length === 0 && (
+            <div className="mb-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3.5 py-3">
+              <p className="text-[0.78rem] font-semibold text-amber-100">{t('dash.cloudPending')}</p>
+              <p className="mt-0.5 text-[0.7rem] leading-relaxed text-amber-100/80">{t('dash.cloudPendingBody')}</p>
+              <button
+                type="button"
+                onClick={() => void store.syncNow()}
+                className="btn mt-2 border border-amber-300/40 bg-amber-400/15 px-3 py-1.5 text-[0.7rem] font-semibold text-amber-100"
+              >
+                {t('dash.cloudPendingCta')}
+              </button>
+            </div>
+          )}
+
           <main className="mt-2">
             {tab === 'dashboard' && (
               <DashboardTab
@@ -209,7 +223,13 @@ export default function App() {
           }}
         />
 
-        <PairingModal open={pairOpen} onClose={() => setPairOpen(false)} credentials={store.credentials} />
+        <PairingModal
+          open={pairOpen}
+          onClose={() => setPairOpen(false)}
+          credentials={store.credentials}
+          onEnsureGist={store.ensureCloudGist}
+          syncError={store.syncError}
+        />
 
         <OnboardingModal
           open={store.needsOnboarding && store.hydrated}
@@ -223,6 +243,17 @@ export default function App() {
           message={store.toast ? { id: store.toast.id, text: t(store.toast.key, store.toast.vars) } : null}
           onDismiss={store.dismissToast}
         />
+
+        {store.bootSyncing && (
+          <div className="fixed inset-0 z-40 flex flex-col items-center justify-center gap-3 px-8 text-center backdrop-blur-xl" style={{ backgroundColor: 'color-mix(in srgb, var(--tier-bg) 90%, transparent)' }}>
+            <span
+              className="h-10 w-10 animate-spin rounded-full border-2 border-white/10"
+              style={{ borderTopColor: 'var(--tier-accent)' }}
+            />
+            <p className="text-sm font-semibold">{t('boot.syncing')}</p>
+            <p className="max-w-[30ch] text-[0.72rem] leading-relaxed text-[color:var(--tier-muted)]">{t('boot.syncingHint')}</p>
+          </div>
+        )}
       </div>
     </I18nContext.Provider>
   );

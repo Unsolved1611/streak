@@ -65,6 +65,8 @@ function describeError(err: unknown): string {
         return 'forbidden';
       case 404:
         return 'not-found';
+      case 409:
+        return 'no-gist';
       case 422:
         return 'invalid-payload';
       default:
@@ -154,6 +156,29 @@ export async function readGistData(gist: GistResponse, fetchImpl: FetchLike = fe
   }
 }
 
+/**
+ * Looks for an existing gist that already holds `streak-data.json`.
+ * Used when the user pastes only a token on a second device: instead of
+ * creating a duplicate gist (which would split the sync in two), we adopt the
+ * most recently updated streak gist in the account.
+ */
+export async function findStreakGist(token: string, fetchImpl: FetchLike = fetch): Promise<string | null> {
+  const res = await fetchImpl(`${GIST_API_BASE}/gists?per_page=100`, {
+    method: 'GET',
+    headers: authHeaders(token),
+    cache: 'no-store',
+  });
+  throwForStatus(res.status);
+  const list: unknown = await res.json();
+  if (!Array.isArray(list)) return null;
+
+  const candidates = (list as GistResponse[])
+    .filter((gist) => gist && gist.id && gist.files && Object.prototype.hasOwnProperty.call(gist.files, GIST_FILE_NAME))
+    .sort((a, b) => Date.parse(b.updated_at ?? '0') - Date.parse(a.updated_at ?? '0'));
+
+  return candidates[0]?.id ?? null;
+}
+
 export type ConflictSource = 'local' | 'remote' | 'none';
 
 export interface ConflictResolution {
@@ -172,19 +197,29 @@ export interface ConflictResolution {
     | 'local-seeded';
 }
 
+const FRESH_START_MS = 5 * 60 * 1000;
+
 /**
  * A freshly-installed device has a default payload whose `updatedAt` is "now".
- * Timestamps alone would let that blank state overwrite a real streak, so a
+ * Timestamps alone would let that blank state overwrite a real streak, so any
  * payload with no actual usage is treated as "no data" during reconciliation.
+ *
+ * A run that was started seconds before connecting to the cloud also counts as
+ * "no data": tapping "Start streak" and then pairing must never erase the vault
+ * that already exists in the account.
  */
 export function isEmptyStreakData(data: StreakData | null | undefined): boolean {
   if (!data) return true;
-  return (
-    !data.activeChallengeStart &&
-    data.history.length === 0 &&
-    data.urgesResisted === 0 &&
-    data.personalPledge.trim().length === 0
-  );
+  if (data.history.length > 0) return false;
+  if (data.urgesResisted > 0) return false;
+  if (data.personalPledge.trim().length > 0) return false;
+  if (!data.activeChallengeStart) return true;
+
+  const started = Date.parse(data.activeChallengeStart);
+  const updated = Date.parse(data.updatedAt);
+  if (!Number.isFinite(started)) return true;
+  if (!Number.isFinite(updated)) return false;
+  return updated - started < FRESH_START_MS;
 }
 
 function timestampOf(data: StreakData | null | undefined): number {
@@ -236,6 +271,21 @@ export interface SyncOutcome {
   /** What the engine did, so the UI can show the right indicator. */
   action: 'pulled' | 'pushed' | 'in-sync' | 'created-gist';
   reason: ConflictResolution['reason'] | 'created' | 'no-credentials';
+  /**
+   * The gist this device is bound to after the call. The store MUST persist it:
+   * that is what makes the next sync (and the pairing QR) use the same gist.
+   */
+  gistId: string | null;
+  /** True only when this call actually created a brand-new gist. */
+  created: boolean;
+}
+
+export interface SyncOptions {
+  /**
+   * Only the explicit "Connect & sync" action should create a gist. Background
+   * syncs never invent one, so a blank install cannot spawn a second gist.
+   */
+  createIfMissing?: boolean;
 }
 
 /**
@@ -270,8 +320,9 @@ export class GistSyncEngine {
   }
 
   /**
-   * Guarantees a gist exists. When the user supplied a Gist ID we trust it and
-   * only create one when the ID is missing (or points at a deleted gist).
+   * Guarantees this device is bound to a gist.
+   * - configured id -> verify it still exists (recreate only if it was deleted)
+   * - no id -> adopt the newest existing streak gist, else create a private one
    */
   async ensureGist(data: StreakData): Promise<{ gistId: string; created: boolean }> {
     const { token, gistId } = this.requireCredentials();
@@ -282,25 +333,38 @@ export class GistSyncEngine {
       } catch (err) {
         if (err instanceof GistApiError && err.status === 404) {
           const gist = await createGist(token, data, this.fetchImpl);
+          this.credentials = { ...this.requireCredentials(), gistId: gist.id };
           return { gistId: gist.id, created: true };
         }
         throw err;
       }
     }
+
+    const existing = await findStreakGist(token, this.fetchImpl).catch(() => null);
+    if (existing) {
+      this.credentials = { ...this.requireCredentials(), gistId: existing };
+      return { gistId: existing, created: false };
+    }
+
     const gist = await createGist(token, data, this.fetchImpl);
+    this.credentials = { ...this.requireCredentials(), gistId: gist.id };
     return { gistId: gist.id, created: true };
   }
 
   async pull(): Promise<{ data: StreakData | null; gist: GistResponse; gistId: string }> {
     const { token, gistId } = this.requireCredentials();
-    if (!gistId) throw new GistApiError('No gist id configured', 404);
+    if (!gistId) throw new GistApiError('No gist configured yet', 409);
     const gist = await getGist(token, gistId, this.fetchImpl);
     const data = await readGistData(gist, this.fetchImpl);
     return { data, gist, gistId };
   }
 
-  async push(data: StreakData): Promise<{ gistId: string; gist: GistResponse }> {
+  async push(data: StreakData, options: SyncOptions = {}): Promise<{ gistId: string; gist: GistResponse }> {
     const { token } = this.requireCredentials();
+    const configured = this.requireCredentials().gistId;
+    if (!configured && !options.createIfMissing) {
+      throw new GistApiError('No gist configured yet', 409);
+    }
     const { gistId, created } = await this.ensureGist(data);
     if (created) return { gistId, gist: { id: gistId } };
     const gist = await updateGist(token, gistId, data, this.fetchImpl);
@@ -308,37 +372,53 @@ export class GistSyncEngine {
   }
 
   /** Full two-way reconciliation used on load, on focus and after mutations. */
-  async synchronize(local: StreakData): Promise<SyncOutcome> {
-    if (!this.credentials) return { data: local, action: 'in-sync', reason: 'no-credentials' };
+  async synchronize(local: StreakData, options: SyncOptions = {}): Promise<SyncOutcome> {
+    if (!this.credentials?.token) {
+      return { data: local, action: 'in-sync', reason: 'no-credentials', gistId: null, created: false };
+    }
+
+    // Never silently mint a new gist from a background sync: that would fork
+    // the account into two gists that can never converge.
+    let created = false;
+    if (!this.credentials.gistId) {
+      if (!options.createIfMissing) throw new GistApiError('No gist configured yet', 409);
+      const ensured = await this.ensureGist(local);
+      this.credentials = { ...this.credentials, gistId: ensured.gistId };
+      created = ensured.created;
+    }
 
     let remote: StreakData | null;
     try {
-      const pulled = await this.pull();
-      remote = pulled.data;
+      remote = (await this.pull()).data;
     } catch (err) {
       if (err instanceof GistApiError && err.status === 404) {
-        const { gistId } = await this.ensureGist(local);
-        this.credentials = { ...this.credentials, gistId };
-        return { data: local, action: 'created-gist', reason: 'created' };
+        // The gist was deleted on GitHub: recreate one and seed it locally.
+        const { gistId, created: recreated } = await this.ensureGist(local);
+        this.credentials = { ...this.requireCredentials(), gistId };
+        return { data: local, action: 'created-gist', reason: 'created', gistId: this.credentials.gistId, created: recreated };
       }
       throw err;
     }
 
+    const gistId = this.credentials.gistId;
     const resolution = resolveConflict(local, remote);
 
     if (resolution.source === 'remote' && resolution.data) {
-      return { data: resolution.data, action: 'pulled', reason: resolution.reason };
+      return { data: resolution.data, action: 'pulled', reason: resolution.reason, gistId, created };
     }
+
     if (resolution.source === 'local' && resolution.data) {
       await updateGist(this.requireCredentials().token, this.requireCredentials().gistId as string, resolution.data, this.fetchImpl);
-      return { data: resolution.data, action: 'pushed', reason: resolution.reason };
+      return { data: resolution.data, action: 'pushed', reason: resolution.reason, gistId, created };
     }
+
     if (resolution.source === 'none' && !remote) {
       // Gist exists but has no payload yet: seed it.
       await updateGist(this.requireCredentials().token, this.requireCredentials().gistId as string, local, this.fetchImpl);
-      return { data: local, action: 'pushed', reason: 'local-only' };
+      return { data: local, action: 'pushed', reason: 'local-only', gistId, created };
     }
-    return { data: resolution.data ?? local, action: 'in-sync', reason: resolution.reason };
+
+    return { data: resolution.data ?? local, action: 'in-sync', reason: resolution.reason, gistId, created };
   }
 }
 
